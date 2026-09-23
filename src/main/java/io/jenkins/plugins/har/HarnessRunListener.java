@@ -32,9 +32,8 @@ import edu.umd.cs.findbugs.annotations.NonNull;
  * and calls {@link HarnessCliLoginTracker#markLoggedOut()}, so this listener will find that
  * logout is already done and skip.
  *
- * <p>The workspace path and node name are read from {@link HarnessCliLoginTracker} where they
- * were captured at login time — this is reliable regardless of whether {@code WORKSPACE} is
- * still in the run environment at build-completion time.
+ * <p>For pipeline builds that used multiple agents, logout is attempted on every agent that
+ * recorded a login in {@link HarnessCliLoginTracker}.
  */
 @Extension
 public class HarnessRunListener extends RunListener<Run<?, ?>> {
@@ -48,12 +47,10 @@ public class HarnessRunListener extends RunListener<Run<?, ?>> {
 
         try {
             EnvVars env = run.getEnvironment(listener);
-            Launcher launcher;
-            FilePath workspace;
 
             if (run instanceof AbstractBuild) {
                 AbstractBuild<?, ?> build = (AbstractBuild<?, ?>) run;
-                workspace = build.getWorkspace();
+                FilePath workspace = build.getWorkspace();
                 if (workspace == null) {
                     listener.getLogger().println("[hc] WARNING: Workspace not available for logout.");
                     return;
@@ -63,37 +60,63 @@ public class HarnessRunListener extends RunListener<Run<?, ?>> {
                     listener.getLogger().println("[hc] WARNING: Agent not available for logout.");
                     return;
                 }
-                launcher = node.createLauncher(listener);
-            } else {
-                // Pipeline — use the workspace path and node captured at login time.
-                String workspacePath = tracker.getWorkspacePath();
-                String nodeName      = tracker.getNodeName();
-                if (StringUtils.isBlank(workspacePath)) {
-                    listener.getLogger().println("[hc] WARNING: No workspace captured at login — skipping logout.");
+                Launcher launcher = node.createLauncher(listener);
+                boolean isWindows = !launcher.isUnix();
+                String hcBinaryPath = tracker.getSessions().isEmpty()
+                        ? null
+                        : tracker.getSessions().iterator().next().getHcBinaryPath();
+                if (hcBinaryPath == null) {
                     return;
                 }
-                Computer computer;
-                if (StringUtils.isBlank(nodeName) || "master".equals(nodeName) || "built-in".equals(nodeName)) {
-                    computer = Jenkins.get().toComputer();
-                } else {
-                    computer = Jenkins.get().getComputer(nodeName);
-                }
-                if (computer == null || computer.getNode() == null) {
-                    listener.getLogger().println(
-                            "[hc] WARNING: Agent '" + nodeName + "' no longer available — skipping logout.");
-                    return;
-                }
-                Node node = computer.getNode();
-                launcher = node.createLauncher(listener);
-                workspace = new FilePath(computer.getChannel(), workspacePath);
+                HcStep.Execution.performLogout(
+                        launcher, workspace, env, hcBinaryPath, isWindows, listener);
+                return;
             }
 
-            boolean isWindows = !launcher.isUnix();
-            HcStep.Execution.performLogout(
-                    launcher, workspace, env, tracker.getHcBinaryPath(), isWindows, listener);
+            // Pipeline — logout on every agent that logged in during this build.
+            for (HarnessCliLoginTracker.AgentSession session : tracker.getSessions()) {
+                logoutSession(session, env, listener);
+            }
 
         } catch (Exception e) {
             listener.getLogger().println("[hc] WARNING: Failed to run 'hc auth logout': " + e.getMessage());
+        }
+    }
+
+    private static void logoutSession(HarnessCliLoginTracker.AgentSession session,
+                                      EnvVars env,
+                                      TaskListener listener) {
+        try {
+            String workspacePath = session.getWorkspacePath();
+            String nodeName = session.getNodeName();
+            if (StringUtils.isBlank(workspacePath)) {
+                listener.getLogger().println(
+                        "[hc] WARNING: No workspace captured for agent '" + nodeName
+                                + "' — skipping logout.");
+                return;
+            }
+            Computer computer;
+            if (StringUtils.isBlank(nodeName) || "built-in".equals(nodeName) || "master".equals(nodeName)) {
+                computer = Jenkins.get().toComputer();
+            } else {
+                computer = Jenkins.get().getComputer(nodeName);
+            }
+            if (computer == null || computer.getNode() == null) {
+                listener.getLogger().println(
+                        "[hc] WARNING: Agent '" + nodeName + "' no longer available — skipping logout.");
+                return;
+            }
+            Node node = computer.getNode();
+            Launcher launcher = node.createLauncher(listener);
+            FilePath workspace = new FilePath(computer.getChannel(), workspacePath);
+            boolean isWindows = !launcher.isUnix();
+            listener.getLogger().println("[hc] Logging out on agent '" + nodeName + "'...");
+            HcStep.Execution.performLogout(
+                    launcher, workspace, env, session.getHcBinaryPath(), isWindows, listener);
+        } catch (Exception e) {
+            listener.getLogger().println(
+                    "[hc] WARNING: Failed to logout on agent '" + session.getNodeName()
+                            + "': " + e.getMessage());
         }
     }
 }

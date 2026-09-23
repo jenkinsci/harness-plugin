@@ -23,6 +23,7 @@ import org.kohsuke.stapler.verb.GET;
 
 import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.IOException;
+import java.util.Collection;
 
 /**
  * Build Environment wrapper that sets up Harness CLI (hc) for the entire Freestyle build.
@@ -121,9 +122,16 @@ public class HarnessCliWrapper extends SimpleBuildWrapper {
             if (tracker == null || !tracker.markLoggedOut()) {
                 return;
             }
+            Collection<HarnessCliLoginTracker.AgentSession> sessions = tracker.getSessions();
+            if (sessions.isEmpty()) {
+                return;
+            }
+            // Freestyle builds run on a single agent for the wrapper lifecycle.
+            HarnessCliLoginTracker.AgentSession session = sessions.iterator().next();
             EnvVars env = build.getEnvironment(listener);
             boolean isWindows = !launcher.isUnix();
-            HcStep.Execution.performLogout(launcher, workspace, env, tracker.getHcBinaryPath(), isWindows, listener);
+            HcStep.Execution.performLogout(
+                    launcher, workspace, env, session.getHcBinaryPath(), isWindows, listener);
         }
     }
 

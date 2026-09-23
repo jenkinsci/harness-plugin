@@ -1,38 +1,59 @@
 package io.jenkins.plugins.har.cli;
 
 import hudson.model.InvisibleAction;
+import org.apache.commons.lang3.StringUtils;
+
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
- * A build action whose <em>presence</em> on a {@code Run} signals that
- * {@code hc auth login} has already been executed for this build.
+ * Build action that records which agents have already run {@code hc auth login}
+ * for this build.
  *
- * <p>{@link HcStep} adds this action after a successful login and checks for it
- * before every subsequent {@code hc} invocation in the same build, preventing
- * redundant login calls when multiple {@code hc} steps appear in a pipeline.
+ * <p>Auth state for the Harness CLI lives on each agent (e.g. {@code ~/.harness/auth.json}),
+ * so login must be tracked per node — not once for the whole {@link hudson.model.Run}.
  *
- * <p>Also records the resolved binary path so that logout can use the same
- * binary at build completion without needing to re-resolve tool installations.
+ * <p>Also stores the binary path and workspace used on each agent so logout can
+ * run on every agent that logged in.
  */
 public class HarnessCliLoginTracker extends InvisibleAction {
 
-    private final String hcBinaryPath;
-    /** Remote workspace path as seen by the agent at login time. */
-    private final String workspacePath;
-    /** Name of the node/agent where login ran (empty string = built-in node). */
-    private final String nodeName;
+    private static final long serialVersionUID = 2L;
+
+    /** nodeName → session details from login time. */
+    private final Map<String, AgentSession> sessions = new LinkedHashMap<>();
 
     /** Transient — not persisted; reset to false after a Jenkins restart (acceptable). */
     private transient volatile boolean loggedOut;
 
-    public HarnessCliLoginTracker(String hcBinaryPath, String workspacePath, String nodeName) {
-        this.hcBinaryPath  = hcBinaryPath;
-        this.workspacePath = workspacePath;
-        this.nodeName      = nodeName;
+    public HarnessCliLoginTracker() {
     }
 
-    public String getHcBinaryPath()  { return hcBinaryPath; }
-    public String getWorkspacePath() { return workspacePath; }
-    public String getNodeName()      { return nodeName; }
+    /**
+     * @return {@code true} if this agent has not yet logged in for this build
+     */
+    public synchronized boolean needsLogin(String nodeName) {
+        return !sessions.containsKey(StringUtils.defaultString(nodeName));
+    }
+
+    /**
+     * Records a successful login on the given agent.
+     */
+    public synchronized void recordLogin(String hcBinaryPath, String workspacePath, String nodeName) {
+        String key = StringUtils.defaultString(nodeName);
+        sessions.put(key, new AgentSession(hcBinaryPath, workspacePath, key));
+    }
+
+    /**
+     * @return immutable snapshot of agents that logged in during this build
+     */
+    public synchronized Collection<AgentSession> getSessions() {
+        return Collections.unmodifiableList(new ArrayList<>(sessions.values()));
+    }
 
     /**
      * Claims the logout responsibility. Returns {@code true} exactly once;
@@ -45,5 +66,26 @@ public class HarnessCliLoginTracker extends InvisibleAction {
         }
         loggedOut = true;
         return true;
+    }
+
+    /**
+     * Login details captured for one agent.
+     */
+    public static final class AgentSession implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        private final String hcBinaryPath;
+        private final String workspacePath;
+        private final String nodeName;
+
+        public AgentSession(String hcBinaryPath, String workspacePath, String nodeName) {
+            this.hcBinaryPath = hcBinaryPath;
+            this.workspacePath = workspacePath;
+            this.nodeName = nodeName;
+        }
+
+        public String getHcBinaryPath()  { return hcBinaryPath; }
+        public String getWorkspacePath() { return workspacePath; }
+        public String getNodeName()      { return nodeName; }
     }
 }

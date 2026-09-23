@@ -36,7 +36,7 @@ import java.nio.charset.StandardCharsets;
  * Build step for running Harness CLI (hc) commands in Freestyle jobs.
  *
  * <p>Mirrors what the {@code hc(...)} Pipeline step does for Declarative/Scripted pipelines.
- * Auto-runs {@code hc auth login} once per build using credentials from
+ * Auto-runs {@code hc auth login} once per agent, per build using credentials from
  * <b>Manage Jenkins → Configure System → Harness CLI Configuration</b>.
  *
  * <p>Example commands:
@@ -110,14 +110,18 @@ public class HarnessCliBuilder extends Builder {
         String hcBinaryPath = HcStep.Execution.getHcCliPath(env, isWindows);
         listener.getLogger().println("[hc] Using binary: " + hcBinaryPath);
 
-        // Auto-login once per build
-        if (build.getAction(HarnessCliLoginTracker.class) == null) {
+        // Auto-login once per agent for this build
+        HarnessCliLoginTracker tracker = build.getAction(HarnessCliLoginTracker.class);
+        if (tracker == null) {
+            tracker = new HarnessCliLoginTracker();
+            build.addAction(tracker);
+        }
+        String nodeName = env.get("NODE_NAME", "");
+        if (tracker.needsLogin(nodeName)) {
             try {
-                performLogin(launcher, workspace, env, hcBinaryPath, isWindows, listener);
-                build.addAction(new HarnessCliLoginTracker(
-                        hcBinaryPath,
-                        workspace.getRemote(),
-                        env.get("NODE_NAME", "")));
+                if (performLogin(launcher, workspace, env, hcBinaryPath, isWindows, listener)) {
+                    tracker.recordLogin(hcBinaryPath, workspace.getRemote(), nodeName);
+                }
             } catch (IOException e) {
                 String msg = ExceptionUtils.getRootCauseMessage(e);
                 listener.error("[hc] Login failed: " + msg);
@@ -182,17 +186,16 @@ public class HarnessCliBuilder extends Builder {
     }
 
     /**
-     * Runs {@code hc auth login} using credentials from {@link HarnessGlobalConfiguration}.
-     * The API token is masked in logs via {@link ArgumentListBuilder#addMasked}.
+     * @return {@code true} if login completed successfully; {@code false} if skipped
      */
-    private static void performLogin(Launcher launcher, FilePath workspace, EnvVars env,
+    private static boolean performLogin(Launcher launcher, FilePath workspace, EnvVars env,
                                      String hcBinaryPath, boolean isWindows,
                                      BuildListener listener) throws IOException, InterruptedException {
 
         HarnessGlobalConfiguration config = HarnessGlobalConfiguration.get();
         if (config == null) {
             listener.getLogger().println("[hc] WARNING: HarnessGlobalConfiguration not found — skipping auto-login.");
-            return;
+            return false;
         }
 
         String apiUrl   = config.getApiUrl();
@@ -202,7 +205,7 @@ public class HarnessCliBuilder extends Builder {
             listener.getLogger().println(
                     "[hc] WARNING: Harness API Token is not configured. "
                     + "Go to Manage Jenkins → Configure System → Harness CLI Configuration.");
-            return;
+            return false;
         }
 
         String effectiveUrl = StringUtils.defaultIfBlank(apiUrl, Constants.DEFAULT_BASE_URL);
@@ -250,6 +253,7 @@ public class HarnessCliBuilder extends Builder {
                     + ". Check credentials under Manage Jenkins → Configure System → Harness CLI Configuration.");
         }
         listener.getLogger().println("[hc] Login successful.");
+        return true;
     }
 
     private HarnessCliInstallation getInstallation() {
