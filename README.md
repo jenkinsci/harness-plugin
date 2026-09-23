@@ -62,7 +62,7 @@ Go to **Manage Jenkins** → **System** and then navigate to **Harness CLI Confi
 | **Organization ID** | Optional. Your Harness Organization slug. For example, `default`. |
 | **Project ID** | Optional. Your Harness Project slug. |
 
-The plugin automatically runs `hc auth login` before the first `hc` step in every build. The API token is always masked in build logs.
+The plugin automatically runs `hc auth login` once per agent, per build, before the first `hc` step on that agent. Later `hc` steps on the same agent skip login. If the job later runs on a different agent, that agent logs in again. The API token is always masked in build logs. At the end of the build the plugin runs `hc auth logout` on each agent that logged in.
 
 
 ### Step 3: Use in a Freestyle job

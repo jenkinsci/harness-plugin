@@ -29,11 +29,12 @@ import static io.jenkins.plugins.har.cli.HarnessCliInstallation.HARNESS_CLI_PATH
 /**
  * Pipeline step {@code hc(...)} that runs the Harness CLI binary.
  *
- * <p>Before the <em>first</em> {@code hc} invocation in a build the step automatically runs
- * {@code hc auth login --username <u> --password <token>} using the credentials configured
- * under <b>Manage Jenkins → Configure System → Harness CLI Configuration</b>.
- * Subsequent {@code hc} steps in the same build skip the login (tracked via
- * {@link HarnessCliLoginTracker}).
+ * <p>Before the first {@code hc} invocation on each agent in a build, the step automatically
+ * runs {@code hc auth login} using the credentials configured under
+ * <b>Manage Jenkins → Configure System → Harness CLI Configuration</b>.
+ * Later {@code hc} steps on the same agent skip login (tracked via
+ * {@link HarnessCliLoginTracker}). A later stage on a different agent logs in again,
+ * because auth lives on that agent's disk.
  *
  * <p>Example Declarative Pipeline:
  * <pre>{@code
@@ -103,17 +104,25 @@ public class HcStep extends Step {
             listener.getLogger().println("[hc] Using binary: " + hcBinaryPath);
 
             // ------------------------------------------------------------------
-            // Auto-login: run 'hc auth login' once per build.
-            // Synchronise on the Run object so parallel pipeline stages don't
-            // race to log in simultaneously (same pattern as JFrog's config step).
+            // Auto-login: once per agent for this build.
+            // Auth lives on each agent's disk, so a login on node A does not
+            // cover node B. Synchronise on the Run so parallel stages on the
+            // same agent do not race (same pattern as JFrog's config step).
             // ------------------------------------------------------------------
             synchronized (run) {
-                if (run.getAction(HarnessCliLoginTracker.class) == null) {
-                    performLogin(launcher, workspace, env, hcBinaryPath, isWindows, listener);
-                    run.addAction(new HarnessCliLoginTracker(
-                            hcBinaryPath,
-                            workspace != null ? workspace.getRemote() : "",
-                            env.get("NODE_NAME", "")));
+                HarnessCliLoginTracker tracker = run.getAction(HarnessCliLoginTracker.class);
+                if (tracker == null) {
+                    tracker = new HarnessCliLoginTracker();
+                    run.addAction(tracker);
+                }
+                String nodeName = env.get("NODE_NAME", "");
+                if (tracker.needsLogin(nodeName)) {
+                    if (performLogin(launcher, workspace, env, hcBinaryPath, isWindows, listener)) {
+                        tracker.recordLogin(
+                                hcBinaryPath,
+                                workspace != null ? workspace.getRemote() : "",
+                                nodeName);
+                    }
                 }
             }
 
@@ -154,7 +163,11 @@ public class HcStep extends Step {
          * from {@link HarnessGlobalConfiguration}.
          * The API token is masked in Jenkins logs via {@link ArgumentListBuilder#addMasked}.
          */
-        private static void performLogin(Launcher launcher, FilePath workspace, EnvVars env,
+        /**
+         * @return {@code true} if login completed successfully; {@code false} if skipped
+         *         (missing config/token)
+         */
+        private static boolean performLogin(Launcher launcher, FilePath workspace, EnvVars env,
                                          String hcBinaryPath, boolean isWindows,
                                          TaskListener listener)
                 throws IOException, InterruptedException {
@@ -163,7 +176,7 @@ public class HcStep extends Step {
             if (config == null) {
                 listener.getLogger().println(
                         "[hc] WARNING: HarnessGlobalConfiguration not found — skipping auto-login.");
-                return;
+                return false;
             }
 
             String apiUrl   = config.getApiUrl();
@@ -173,7 +186,7 @@ public class HcStep extends Step {
                 listener.getLogger().println(
                         "[hc] WARNING: Harness API Token is not configured. "
                         + "Go to Manage Jenkins → Configure System → Harness CLI Configuration.");
-                return;
+                return false;
             }
 
             String effectiveUrl = StringUtils.defaultIfBlank(apiUrl,  Constants.DEFAULT_BASE_URL);
@@ -226,6 +239,7 @@ public class HcStep extends Step {
                         + ". Check the credentials under Manage Jenkins → Configure System → Harness CLI Configuration.");
             }
             listener.getLogger().println("[hc] Login successful.");
+            return true;
         }
 
         /**
