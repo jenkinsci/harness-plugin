@@ -6,11 +6,11 @@
         <groupId>org.jenkins-ci.plugins</groupId>
         <artifactId>plugin</artifactId>
         <version>6.2211.v27f680c93c53</version>
-        <relativePath/>
+        <relativePath />
     </parent>
     <groupId>io.jenkins.plugins</groupId>
     <artifactId>harness</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>hpi</packaging>
     <name>Harness Plugin</name>
     <description>A plugin to integrate harness artifact registry CLI with Jenkins</description>
@@ -44,7 +44,7 @@
         <connection>scm:git:https://github.com/jenkinsci/${project.artifactId}-plugin.git</connection>
         <developerConnection>scm:git:https://github.com/jenkinsci/${project.artifactId}-plugin.git</developerConnection>
         <url>https://github.com/jenkinsci/${project.artifactId}-plugin</url>
-        <tag>${scmTag}</tag>
+        <tag>harness-1.0.0</tag>
     </scm>
     <repositories>
         <repository>
